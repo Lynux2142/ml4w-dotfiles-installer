@@ -2,6 +2,10 @@
 
 An authentic, modular, and safe way to deploy Linux configurations. This script acts as a professional **Profile Manager** that allows you to manage multiple dotfile setups, handles distribution-specific dependencies for **Arch**, **Fedora**, and **openSUSE**, and uses an intelligent symlinking system with automated backups.
 
+## 🛠 Installation and Documentation
+
+You can find all installation options in the documentation of the ML4W Dotfiles Installer here:<br><b>https://ml4w.com/dotfiles-installer/</b>
+
 ## 🚀 Key Features
 
 * **Distro Agnostic:** Detects your package manager (Pacman, DNF, or Zypper) automatically.
