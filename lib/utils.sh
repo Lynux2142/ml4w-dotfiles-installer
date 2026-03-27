@@ -318,7 +318,7 @@ read_dotinst() {
         info "Remote repository detected. Cloning source..."
         local clone_cmd="git clone --depth=1"
         [ -n "$tag" ] && [ "$tag" != "null" ] && clone_cmd="git clone --depth=1 --branch $tag"
-        if ! $clone_cmd "$git_url" "$working_dir" &> /dev/null; then 
+        if ! $clone_cmd --recursive "$git_url" "$working_dir" &> /dev/null; then 
             error "Failed to clone repository."; rm -rf "$working_dir"; return 1
         fi
     fi
