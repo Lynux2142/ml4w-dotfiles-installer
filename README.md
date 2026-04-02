@@ -24,7 +24,7 @@ To install the installer script to your local system:
 
 1. **Clone the repository.**
 ```bash
-git clone https://github.com/mylinuxforwork/ml4w-dotfiles-installer
+git clone https://github.com/Lynux2142/ml4w-dotfiles-installer
 
 ```
 2. **Run the installation:**
