@@ -36,7 +36,7 @@ handle_restore_logic() {
     info "Existing configuration found. Select items to keep (Restore):"
     info "Uncheck items to overwrite with default versions from the update."
     
-    local user_selections=$(echo "$restore_data" | gum choose --no-limit --selected="$selected_default")
+    local user_selections=$(echo "$restore_data" | gum choose --no-limit --height 25 --selected="$selected_default")
 
     if [ -z "$user_selections" ]; then
         warn "No items selected for restoration. Overwriting with all defaults."
@@ -212,8 +212,8 @@ run_setup_logic() {
     # 1. Repo Preflight
     local preflight="$repo_path/setup/preflight-$distro.sh"
     if [ -f "$preflight" ]; then 
-        info "Running preflight script for $distro..."
-        bash "$preflight"
+        info "Running preflight script $preflight for $distro..."
+        source "$preflight"
     fi
     
     # 2. Dependencies
@@ -229,15 +229,26 @@ run_setup_logic() {
     # 3. Repo Post-installation
     local postflight="$repo_path/setup/post-$distro.sh"
     if [ -f "$postflight" ]; then 
-        info "Running post-installation script for $distro..."
-        bash "$postflight"
+        info "Running post-installation script $postflight for $distro..."
+        source "$postflight"
     fi
 
     # 4. User-specific Post-installation
     local user_post="$user_config_dir/post.sh"
     if [ -f "$user_post" ]; then
         info "Running user-specific post-installation script for $profile_id..."
-        bash "$user_post"
+        source "$user_post"
+    fi
+}
+
+# --- Run Migration Script for file modifications after creating the symbolic links ---
+run_migration() {
+    local repo_path=$1
+    local profile_id=$2
+    local migration="$repo_path/setup/migration.sh"
+    if [ -f $migration ]; then
+        info "Running migration script $migration for $profile_id..."
+        source "$migration"
     fi
 }
 
