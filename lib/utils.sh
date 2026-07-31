@@ -60,7 +60,10 @@ handle_restore_logic() {
         if [ -e "$src_path" ]; then
             info "  - Restoring: $title ($rel_src)"
             mkdir -p "$(dirname "$dest_path")"
-            cp -a "$src_path" "$dest_path"
+            # -T treats the destination as the target itself, never as a folder
+            # to copy into. Without it an existing destination folder would
+            # receive a nested copy (e.g. settings/settings) instead of a merge.
+            cp -aT "$src_path" "$dest_path"
         else
             warn "  - Restore source not found: $rel_src"
         fi
