@@ -36,10 +36,7 @@ check_and_install() {
 install_package() {
     local pkg=$1; local distro=$(get_distro_by_bin)
     case "$distro" in
-        arch)
-            if command -v yay &> /dev/null; then yay -S --needed --noconfirm "$pkg"
-            elif command -v paru &> /dev/null; then paru -S --needed --noconfirm "$pkg"
-            else sudo pacman -S --needed --noconfirm "$pkg"; fi ;;
+        arch) sudo pacman -S --needed --noconfirm "$pkg"; fi ;;
         fedora) sudo dnf install -y "$pkg" ;;
         opensuse) sudo zypper install -y "$pkg" ;;
     esac
