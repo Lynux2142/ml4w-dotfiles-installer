@@ -1,6 +1,6 @@
 # ML4W Dotfiles Installer
 
-An authentic, modular, and safe way to deploy Linux configurations. This script acts as a professional **Profile Manager** that allows you to manage multiple dotfile setups, handles distribution-specific dependencies for **Arch**, **Fedora**, and **openSUSE**, and uses an intelligent symlinking system with automated backups.
+An authentic, modular, and safe way to deploy Linux configurations. This script acts as a professional **Profile Manager** that allows you to manage multiple dotfile setups, handles distribution-specific dependencies for **Arch**, **Fedora**, **openSUSE**, and **Ubuntu**, and uses an intelligent symlinking system with automated backups.
 
 ## 🛠 Installation and Documentation
 
@@ -8,13 +8,14 @@ You can find all installation options in the documentation of the ML4W Dotfiles 
 
 ## 🚀 Key Features
 
-* **Distro Agnostic:** Detects your package manager (Pacman, DNF, or Zypper) automatically.
+* **Distro Agnostic:** Detects your package manager (Pacman, DNF, Zypper, or APT) automatically.
 * **Safe Sandbox:** Dotfiles are first copied to a local folder before being symlinked to `$HOME`.
 * **Proactive Symlinking:** Automatically detects if a symlink points to a different ID and replaces it.
 * **Automated Backups:** Full profile snapshots and symlink backups organized by Project ID and Timestamp.
 * **Developer Friendly:** Supports local `.dotinst` files and local repository sources for rapid testing.
 * **Test Mode:** Verify package installation and setup logic without touching your files.
 * **User Overrides:** Support for individual user `post.sh` scripts per profile.
+* **Clean Output:** Package installation output is hidden and written to a logfile.
 
 ---
 
@@ -67,6 +68,21 @@ ml4w-dotfiles-installer --install ~/Projects/dotfiles/dev.dotinst --testmode
 
 ```
 
+### 📝 Logfile & Verbose Mode
+
+The output of all package installations is hidden and written to a logfile, while a spinner shows the current progress. Each run creates a new logfile, and the last 10 are kept:
+
+```text
+~/.local/state/ml4w-dotfiles-installer/logs/install-YYYYMMDD_HHMMSS.log
+```
+
+If a package fails to install, the installer continues and lists all failed packages at the end. Check the logfile for details. To show the installation output in the terminal as well, use `--verbose`:
+
+```bash
+ml4w-dotfiles-installer --install ~/Projects/dotfiles/dev.dotinst --verbose
+
+```
+
 ---
 
 ## 🏗 For Content Creators: The `.dotinst` File
@@ -91,6 +107,39 @@ ml4w-dotfiles-installer --install ~/Projects/dotfiles/dev.dotinst --testmode
 }
 
 ```
+
+### Setup Scripts & Dependencies
+
+The installer looks for an optional `setup/` folder in the root of your dotfiles repository. All files are optional, and `$distro` is the detected distribution (`arch`, `fedora`, `opensuse` or `ubuntu`):
+
+```text
+setup/
+├── preflight.sh              # Runs on all distributions
+├── preflight-$distro.sh      # Runs only on the matching distribution
+├── dependencies/
+│   ├── packages              # Packages for all distributions
+│   └── packages-$distro      # Distribution-specific packages
+├── post.sh                   # Runs on all distributions
+└── post-$distro.sh           # Runs only on the matching distribution
+```
+
+**Execution order:**
+
+1. `preflight.sh` → `preflight-$distro.sh`
+2. `packages` → `packages-$distro`
+3. `post.sh` → `post-$distro.sh`
+4. User `post.sh` (see [Personal Overrides](#1-personal-overrides-user-postsh))
+
+General scripts always run before their distribution-specific counterparts, so a distro script can adjust or override what the general script did. All scripts are sourced, so variables and functions defined in a general script are available in the distro script.
+
+Setup scripts run with visible output. To hide the output of a command and write it to the installer logfile instead, use `run_logged` (with an optional spinner title):
+
+```bash
+ensure_sudo   # ask for the sudo password up front, before the output is hidden
+run_logged --title "Installing yay..." makepkg -si --noconfirm
+```
+
+> **Tip:** Keep `preflight.sh` limited to checks, backups and prompts. Anything that installs software (e.g. an AUR helper or extra repositories) belongs in `preflight-$distro.sh`.
 
 ---
 
@@ -130,7 +179,7 @@ Files listed here will be skipped during the staging process, preserving your lo
 
 ## 🔄 Restore & Update Logic
 
-1. **Automatic Profile Backup:** Before updates, your profile folder is backed up to `~/.mydotfiles-test/backups/profile-updates/ID/<timestamp>`.
+1. **Automatic Profile Backup:** Before updates, your profile folder is backed up to `~/.mydotfiles/backups/profile-updates/[PROJECT_ID]/[TIMESTAMP]`.
 2. **Selective Restoration:** Interactive menu via `gum` to select which custom configurations to keep.
 3. **Intelligent Merge:** Selected items are merged into the new source before deployment.
 
@@ -138,9 +187,9 @@ Files listed here will be skipped during the staging process, preserving your lo
 
 ## 🛡 Safety & Backups
 
-The installer uses a highly organized backup system:
+The installer uses a highly organized backup system. All backups are stored in the `backups` folder of the dotfiles directory (`~/.mydotfiles` by default, or the directory set with `--target`):
 
-1. **Symlink Backups:** If a file in `$HOME` is replaced, it is moved to `~/.mydotfiles-test/backups/[PROJECT_ID]/[TIMESTAMP]`.
+1. **Symlink Backups:** If a file or folder in `$HOME` or `$HOME/.config` is replaced by a symlink, it is moved to `~/.mydotfiles/backups/[PROJECT_ID]/[TIMESTAMP]`.
 2. **Active Replacement:** If the installer detects an existing symlink pointing to a *different* project ID, it proactively recreates the link to point to the currently active profile.
 
 ---

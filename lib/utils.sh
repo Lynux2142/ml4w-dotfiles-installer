@@ -36,7 +36,14 @@ handle_restore_logic() {
     info "Existing configuration found. Select items to keep (Restore):"
     info "Uncheck items to overwrite with default versions from the update."
     
-    local user_selections=$(echo "$restore_data" | gum choose --no-limit --height 25 --selected="$selected_default")
+    local user_selections
+    if [ "${ML4W_YES:-0}" = "1" ]; then
+        # Non-interactive: keep every item (default selection = all). Scripts
+        # (dot-switch) set ML4W_YES=1; gum can't be answered with typed 'y'.
+        user_selections="$restore_data"
+    else
+        user_selections=$(echo "$restore_data" | gum choose --no-limit --height 25 --selected="$selected_default")
+    fi
 
     if [ -z "$user_selections" ]; then
         warn "No items selected for restoration. Overwriting with all defaults."
@@ -70,6 +77,25 @@ handle_restore_logic() {
     done <<< "$user_selections"
 }
 
+# --- Blacklist Matching Helper ---
+# Returns 0 (true) if rel_path is blacklisted: exact match, path lives under
+# a blacklisted entry, or path is an ancestor of one. The ancestor case
+# matters for symlink deployment — if a subdirectory is blacklisted, its
+# parent must not be linked either, otherwise a partial sandbox would replace
+# real local files.
+is_blacklisted() {
+    local rel_path=$1
+    local blacklist=$2
+    [ -f "$blacklist" ] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line=$(echo "$line" | xargs)
+        line="${line%/}"   # normalize trailing slash (README example: .config/my-app/)
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        [[ "$rel_path" == "$line" || "$rel_path" == "$line"/* || "$line" == "$rel_path"/* ]] && return 0
+    done < "$blacklist"
+    return 1
+}
+
 # --- RECURSIVE Blacklist-Aware Copy ---
 copy_with_blacklist() {
     local source=$1
@@ -83,6 +109,7 @@ copy_with_blacklist() {
     if [ -f "$blacklist" ]; then
         while IFS= read -r line || [[ -n "$line" ]]; do
             line=$(echo "$line" | xargs)
+            line="${line%/}"   # normalize trailing slash (README example: .config/my-app/)
             [[ -z "$line" || "$line" =~ ^# ]] && continue
             blacklisted+=("$line")
         done < "$blacklist"
@@ -102,9 +129,13 @@ copy_with_blacklist() {
             fi
         done
 
-        if [ "$skip" = true ] && [ -e "$target_path" ]; then
+        # Skip blacklisted entries unconditionally. The previous guard
+        # (`[ -e "$target_path" ]`) only preserved blacklisted paths that
+        # already existed in the sandbox, so a fresh deploy staged them
+        # anyway and they got symlinked over real files.
+        if [ "$skip" = true ]; then
             if [[ "$rel_path" == "$b" ]]; then
-                warn "  - Preserving blacklisted entry: $rel_path"
+                warn "  - Skipping blacklisted entry: $rel_path"
             fi
             continue
         fi
@@ -147,7 +178,7 @@ create_symlink() {
 
 # --- Deployment Orchestrator ---
 deploy_symlinks() {
-    local source_dir=$1; local backup_root=$2; local id=$3
+    local source_dir=$1; local backup_root=$2; local id=$3; local blacklist=$4
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local backup_dir="$backup_root/backups/$id/$timestamp"
 
@@ -156,7 +187,14 @@ deploy_symlinks() {
         local name=$(basename "$item")
         [[ "$name" == "." || "$name" == ".." || "$name" == ".config" ]] && continue
         [ -e "$item" ] || continue
-        
+
+        # Never link blacklisted paths, even if they somehow exist in the
+        # sandbox (e.g. staged by an older version or an empty dir).
+        if is_blacklisted "$name" "$blacklist"; then
+            warn "  - Skipping blacklisted entry: $name"
+            continue
+        fi
+
         create_symlink "$item" "$HOME/$name" "$backup_dir"
     done
 
@@ -166,7 +204,12 @@ deploy_symlinks() {
             local name=$(basename "$item")
             [[ "$name" == "." || "$name" == ".." ]] && continue
             [ -e "$item" ] || continue
-            
+
+            if is_blacklisted ".config/$name" "$blacklist"; then
+                warn "  - Skipping blacklisted entry: .config/$name"
+                continue
+            fi
+
             create_symlink "$item" "$HOME/.config/$name" "$backup_dir"
         done
     fi
@@ -180,7 +223,10 @@ process_package_file() {
     local distro=$(get_distro_by_bin)
     info "Processing package list: $(basename "$file")"
 
-    while IFS= read -r pkg || [ -n "$pkg" ]; do
+    # Read the list up front so install commands can't consume the loop's stdin
+    local lines; mapfile -t lines < "$file"
+    local pkg
+    for pkg in "${lines[@]}"; do
         pkg=$(echo "$pkg" | sed 's/#.*//' | xargs); [[ -z "$pkg" ]] && continue
 
         local installed=false
@@ -191,6 +237,9 @@ process_package_file() {
             fedora|opensuse)
                 if rpm -q "$pkg" &> /dev/null; then installed=true; fi
                 ;;
+            ubuntu)
+                if dpkg-query -W -f='${Status}' "$pkg" 2> /dev/null | grep -q "install ok installed"; then installed=true; fi
+                ;;
         esac
 
         if [ "$installed" = false ] && command -v "$pkg" &> /dev/null; then
@@ -199,10 +248,13 @@ process_package_file() {
 
         if [ "$installed" = true ]; then
             info "  - $pkg is already installed. Skipping."
+        elif install_package "$pkg"; then
+            info "  ✓ $pkg installed."
         else
-            info "  - Installing $pkg..."; install_package "$pkg"
+            error "  ✗ Failed to install $pkg."
+            FAILED_PACKAGES+=("$pkg")
         fi
-    done < "$file"
+    done
 }
 
 # --- Run setup logic with preflight, dependencies, post-installation and user post script ---
@@ -212,28 +264,46 @@ run_setup_logic() {
     local dep_dir="$repo_path/setup/dependencies"
     local user_config_dir="$HOME/.config/ml4w-dotfiles-installer/$profile_id"
     
-    # 1. Repo Preflight
-    local preflight="$repo_path/setup/preflight-$distro.sh"
-    if [ -f "$preflight" ]; then 
-        info "Running preflight script $preflight for $distro..."
+    # 1. Repo Preflight (general first, then distro-specific)
+    local preflight="$repo_path/setup/preflight.sh"
+    if [ -f "$preflight" ]; then
+        info "Running preflight script $preflight..."
         source "$preflight"
+    fi
+    local distro_preflight="$repo_path/setup/preflight-$distro.sh"
+    if [ -f "$distro_preflight" ]; then 
+        info "Running preflight script $distro_preflight for $distro..."
+        source "$distro_preflight"
     fi
     
     # 2. Dependencies
+    # NOTE: a missing dependency folder must NOT abort the rest of setup.
+    # Profiles like ML4W's repo don't ship setup/dependencies, and returning
+    # early here silently skipped step 4 (the user post.sh hook) — which is
+    # where Hyprland 0.56 compat fixes live. Warn and continue instead.
     if [ ! -d "$dep_dir" ]; then 
-        warn "Dependency folder not found at: $dep_dir"
-        return 1
+        warn "Dependency folder not found at: $dep_dir — skipping dependency install (post-install hooks will still run)."
+    else
+        FAILED_PACKAGES=()
+        [ -f "$dep_dir/packages" ] && process_package_file "$dep_dir/packages"
+        local distro_pkgs="$dep_dir/packages-$distro"
+        [ -f "$distro_pkgs" ] && process_package_file "$distro_pkgs"
+        if [ ${#FAILED_PACKAGES[@]} -gt 0 ]; then
+            warn "${#FAILED_PACKAGES[@]} package(s) could not be installed: ${FAILED_PACKAGES[*]}"
+            warn "See the logfile for details: $LOG_FILE"
+        fi
     fi
-    
-    [ -f "$dep_dir/packages" ] && process_package_file "$dep_dir/packages"
-    local distro_pkgs="$dep_dir/packages-$distro"
-    [ -f "$distro_pkgs" ] && process_package_file "$distro_pkgs"
 
-    # 3. Repo Post-installation
-    local postflight="$repo_path/setup/post-$distro.sh"
-    if [ -f "$postflight" ]; then 
-        info "Running post-installation script $postflight for $distro..."
+    # 3. Repo Post-installation (general first, then distro-specific)
+    local postflight="$repo_path/setup/post.sh"
+    if [ -f "$postflight" ]; then
+        info "Running post-installation script $postflight..."
         source "$postflight"
+    fi
+    local distro_postflight="$repo_path/setup/post-$distro.sh"
+    if [ -f "$distro_postflight" ]; then 
+        info "Running post-installation script $distro_postflight for $distro..."
+        source "$distro_postflight"
     fi
 
     # 4. User-specific Post-installation
@@ -258,11 +328,16 @@ run_migration() {
 # --- Check dotfiles installer dependencies ---
 check_dependencies() {
     info "Checking system dependencies..."
-    check_and_install "make" "make"
-    check_and_install "git" "git"
-    check_and_install "curl" "curl"
-    check_and_install "jq" "jq"
-    check_and_install "gum" "gum"
+    local failed=false
+    check_and_install "make" "make" || failed=true
+    check_and_install "git" "git" || failed=true
+    check_and_install "curl" "curl" || failed=true
+    check_and_install "jq" "jq" || failed=true
+    check_and_install "gum" "gum" || failed=true
+    if [ "$failed" = true ]; then
+        error "Required tools for the installer are missing. Exiting."
+        exit 1
+    fi
 }
 
 # --- Active Profile Tracker ---
@@ -322,7 +397,7 @@ read_dotinst() {
     echo -e "Description: $description" >&2
     echo -e "${GREEN}--------------------------------------------------${NC}" >&2
 
-    if ! gum confirm "Do you want to proceed with the installation?"; then info "Installation cancelled by user."; exit 0; fi
+    if [ "${ML4W_YES:-0}" != "1" ] && ! gum confirm "Do you want to proceed with the installation?"; then info "Installation cancelled by user."; exit 0; fi
 
     local working_dir=$(mktemp -d -t ml4w-dots-XXXXXX)
     if [ -d "$git_url" ]; then
